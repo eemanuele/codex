@@ -197,6 +197,12 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     } = conversation_manager.new_conversation(config).await?;
     info!("Codex initialized with event: {session_configured:?}");
 
+    // Manually process the SessionConfigured event since ConversationManager consumes it
+    event_processor.process_event(Event {
+        id: "0".to_string(),
+        msg: EventMsg::SessionConfigured(session_configured),
+    });
+
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     {
         let conversation = conversation.clone();

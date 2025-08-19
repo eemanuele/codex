@@ -35,6 +35,23 @@ const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5";
 pub const SWIFTFOX_MEDIUM_MODEL: &str = "swiftfox-medium";
 
+/// Find a session file by its UUID in the sessions directory
+fn find_session_file_by_id(session_id: &uuid::Uuid, codex_home: &Path) -> Option<PathBuf> {
+    let sessions_dir = codex_home.join("sessions");
+    let session_id_str = session_id.to_string();
+    
+    // Use glob to find all .jsonl files containing the session ID
+    let pattern = format!("{}/**/rollout-*-{}.jsonl", sessions_dir.display(), session_id_str);
+    
+    if let Ok(paths) = glob::glob(&pattern) {
+        for path in paths.flatten() {
+            return Some(path);
+        }
+    }
+    
+    None
+}
+
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
@@ -897,7 +914,18 @@ impl Config {
                 .and_then(|info| info.auto_compact_token_limit)
         });
 
-        let experimental_resume = cfg.experimental_resume;
+        let experimental_resume = cfg.experimental_resume.and_then(|path| {
+            // Check if the path is actually a UUID (session ID)
+            if let Some(path_str) = path.to_str() {
+                if let Ok(session_id) = uuid::Uuid::parse_str(path_str) {
+                    // Convert session ID to possible file paths
+                    if let Some(resolved_path) = find_session_file_by_id(&session_id, &codex_home) {
+                        return Some(resolved_path);
+                    }
+                }
+            }
+            Some(path)
+        });
 
         // Load base instructions override from a file if specified. If the
         // path is relative, resolve it against the effective cwd so the

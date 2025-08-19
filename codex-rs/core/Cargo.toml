@@ -25,6 +25,7 @@ dirs = "6"
 env-flags = "0.1.1"
 eventsource-stream = "0.2.3"
 futures = "0.3"
+glob = "0.3"
 libc = "0.2.175"
 mcp-types = { path = "../mcp-types" }
 os_info = "3.12.0"
