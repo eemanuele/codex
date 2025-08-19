@@ -704,6 +704,7 @@ dependencies = [
  "env-flags",
  "eventsource-stream",
  "futures",
+ "glob",
  "landlock",
  "libc",
  "maplit",
