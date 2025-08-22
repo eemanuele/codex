@@ -71,6 +71,7 @@ pub(crate) struct ToolsConfig {
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
     pub experimental_unified_exec_tool: bool,
+    pub read_image_tool: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -130,6 +131,7 @@ impl ToolsConfig {
             web_search_request: *include_web_search_request,
             include_view_image_tool: *include_view_image_tool,
             experimental_unified_exec_tool: *experimental_unified_exec_tool,
+            read_image_tool: true, // Enable read_image tool by default for all models
         }
     }
 }
@@ -329,6 +331,26 @@ pub(crate) struct ApplyPatchToolArgs {
     pub(crate) input: String,
 }
 
+fn create_read_image_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some("Path to the image file to read".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "read_image".to_string(),
+        description: "Read an image file and include it in the conversation. Supports common image formats (PNG, JPEG, GIF, WebP, BMP, TIFF, etc.). The image will be processed and made available for visual analysis in subsequent messages.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["path".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
 /// Returns JSON values that are compatible with Function Calling in the
 /// Responses API:
 /// https://platform.openai.com/docs/guides/function-calling?api-mode=responses
@@ -580,6 +602,10 @@ pub(crate) fn get_openai_tools(
     if config.include_view_image_tool {
         tools.push(create_view_image_tool());
     }
+
+    if config.read_image_tool {
+        tools.push(create_read_image_tool());
+    }
     if let Some(mcp_tools) = mcp_tools {
         // Ensure deterministic ordering to maximize prompt cache hits.
         let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
@@ -649,7 +675,7 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image"],
+            &["unified_exec", "update_plan", "web_search", "view_image", "read_image"],
         );
     }
 
@@ -671,7 +697,7 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image"],
+            &["unified_exec", "update_plan", "web_search", "view_image", "read_image"],
         );
     }
 
@@ -733,6 +759,7 @@ mod tests {
                 "unified_exec",
                 "web_search",
                 "view_image",
+                "read_image",
                 "test_server/do_something_cool",
             ],
         );
@@ -846,12 +873,13 @@ mod tests {
         ]);
 
         let tools = get_openai_tools(&config, Some(tools_map));
-        // Expect unified_exec first, followed by MCP tools sorted by fully-qualified name.
+        // Expect unified_exec first, followed by view_image, read_image, then MCP tools sorted by fully-qualified name.
         assert_eq_tool_names(
             &tools,
             &[
                 "unified_exec",
                 "view_image",
+                "read_image",
                 "test_server/cool",
                 "test_server/do",
                 "test_server/something",
@@ -899,7 +927,7 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/search"],
+            &["unified_exec", "web_search", "view_image", "read_image", "dash/search"],
         );
 
         assert_eq!(
@@ -960,7 +988,7 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/paginate"],
+            &["unified_exec", "web_search", "view_image", "read_image", "dash/paginate"],
         );
         assert_eq!(
             tools[3],
@@ -1018,7 +1046,7 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/tags"],
+            &["unified_exec", "web_search", "view_image", "read_image", "dash/tags"],
         );
         assert_eq!(
             tools[3],
@@ -1079,7 +1107,7 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/value"],
+            &["unified_exec", "web_search", "view_image", "read_image", "dash/value"],
         );
         assert_eq!(
             tools[3],
@@ -1147,5 +1175,32 @@ mod tests {
         assert_eq!(name, "shell");
 
         assert_eq!(description, "Runs a shell command and returns its output.");
+    }
+
+    #[test]
+    fn test_read_image_tool_creation() {
+        let tool = create_read_image_tool();
+
+        match tool {
+            OpenAiTool::Function(ResponsesApiTool { name, description, parameters, .. }) => {
+                assert_eq!(name, "read_image");
+                assert!(description.contains("Read an image file"));
+                assert!(description.contains("PNG, JPEG, GIF, WebP"));
+
+                if let JsonSchema::Object { properties, required, .. } = parameters {
+                    assert!(properties.contains_key("path"));
+                    assert_eq!(required, Some(vec!["path".to_string()]));
+
+                    if let Some(JsonSchema::String { description: Some(desc) }) = properties.get("path") {
+                        assert_eq!(desc, "Path to the image file to read");
+                    } else {
+                        panic!("Expected path parameter to be a string with description");
+                    }
+                } else {
+                    panic!("Expected object schema for read_image tool");
+                }
+            }
+            _ => panic!("Expected function tool for read_image"),
+        }
     }
 }
