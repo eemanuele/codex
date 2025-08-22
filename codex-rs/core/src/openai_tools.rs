@@ -44,6 +44,7 @@ pub struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub plan_tool: bool,
     pub apply_patch_tool: bool,
+    pub read_image_tool: bool,
 }
 
 impl ToolsConfig {
@@ -69,6 +70,7 @@ impl ToolsConfig {
             shell_type,
             plan_tool: include_plan_tool,
             apply_patch_tool: include_apply_patch_tool || model_family.uses_apply_patch_tool,
+            read_image_tool: true, // Enable read_image tool by default for all models
         }
     }
 }
@@ -319,6 +321,27 @@ It is important to remember:
     })
 }
 
+fn create_read_image_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some("Path to the image file to read".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "read_image".to_string(),
+        description: "Read an image file and include it in the conversation. Supports common image formats (PNG, JPEG, GIF, WebP, BMP, TIFF, etc.). The image will be processed and made available for visual analysis in subsequent messages.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["path".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
 /// Returns JSON values that are compatible with Function Calling in the
 /// Responses API:
 /// https://platform.openai.com/docs/guides/function-calling?api-mode=responses
@@ -543,6 +566,10 @@ pub(crate) fn get_openai_tools(
         tools.push(create_apply_patch_tool());
     }
 
+    if config.read_image_tool {
+        tools.push(create_read_image_tool());
+    }
+
     if let Some(mcp_tools) = mcp_tools {
         for (name, tool) in mcp_tools {
             match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
@@ -600,7 +627,7 @@ mod tests {
         );
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
-        assert_eq_tool_names(&tools, &["local_shell", "update_plan"]);
+        assert_eq_tool_names(&tools, &["local_shell", "update_plan", "read_image"]);
     }
 
     #[test]
@@ -615,7 +642,7 @@ mod tests {
         );
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
-        assert_eq_tool_names(&tools, &["shell", "update_plan"]);
+        assert_eq_tool_names(&tools, &["shell", "update_plan", "read_image"]);
     }
 
     #[test]
@@ -666,10 +693,10 @@ mod tests {
             )])),
         );
 
-        assert_eq_tool_names(&tools, &["shell", "test_server/do_something_cool"]);
+        assert_eq_tool_names(&tools, &["shell", "read_image", "test_server/do_something_cool"]);
 
         assert_eq!(
-            tools[1],
+            tools[2],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -746,10 +773,10 @@ mod tests {
             )])),
         );
 
-        assert_eq_tool_names(&tools, &["shell", "dash/search"]);
+        assert_eq_tool_names(&tools, &["shell", "read_image", "dash/search"]);
 
         assert_eq!(
-            tools[1],
+            tools[2],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -800,9 +827,9 @@ mod tests {
             )])),
         );
 
-        assert_eq_tool_names(&tools, &["shell", "dash/paginate"]);
+        assert_eq_tool_names(&tools, &["shell", "read_image", "dash/paginate"]);
         assert_eq!(
-            tools[1],
+            tools[2],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
                 parameters: JsonSchema::Object {
@@ -851,9 +878,9 @@ mod tests {
             )])),
         );
 
-        assert_eq_tool_names(&tools, &["shell", "dash/tags"]);
+        assert_eq_tool_names(&tools, &["shell", "read_image", "dash/tags"]);
         assert_eq!(
-            tools[1],
+            tools[2],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -905,9 +932,9 @@ mod tests {
             )])),
         );
 
-        assert_eq_tool_names(&tools, &["shell", "dash/value"]);
+        assert_eq_tool_names(&tools, &["shell", "read_image", "dash/value"]);
         assert_eq!(
-            tools[1],
+            tools[2],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
@@ -922,5 +949,32 @@ mod tests {
                 strict: false,
             })
         );
+    }
+
+    #[test]
+    fn test_read_image_tool_creation() {
+        let tool = create_read_image_tool();
+        
+        match tool {
+            OpenAiTool::Function(ResponsesApiTool { name, description, parameters, .. }) => {
+                assert_eq!(name, "read_image");
+                assert!(description.contains("Read an image file"));
+                assert!(description.contains("PNG, JPEG, GIF, WebP"));
+                
+                if let JsonSchema::Object { properties, required, .. } = parameters {
+                    assert!(properties.contains_key("path"));
+                    assert_eq!(required, Some(vec!["path".to_string()]));
+                    
+                    if let Some(JsonSchema::String { description: Some(desc) }) = properties.get("path") {
+                        assert_eq!(desc, "Path to the image file to read");
+                    } else {
+                        panic!("Expected path parameter to be a string with description");
+                    }
+                } else {
+                    panic!("Expected object schema for read_image tool");
+                }
+            }
+            _ => panic!("Expected function tool for read_image"),
+        }
     }
 }
