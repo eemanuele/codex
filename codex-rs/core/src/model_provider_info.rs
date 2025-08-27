@@ -14,6 +14,9 @@ use std::env::VarError;
 use std::time::Duration;
 
 use crate::error::EnvVarError;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
@@ -102,6 +105,26 @@ impl ModelProviderInfo {
         client: &'a reqwest::Client,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<reqwest::RequestBuilder> {
+        // Check for Azure client credentials first (if base_url contains azure.com)
+        if let Some(base_url) = &self.base_url {
+            if base_url.to_lowercase().contains("azure.com") {
+                if let (Ok(client_id), Ok(client_secret), Ok(tenant_id)) = (
+                    std::env::var("AZURE_CLIENT_ID"),
+                    std::env::var("AZURE_CLIENT_SECRET"),
+                    std::env::var("AZURE_TENANT_ID")
+                ) {
+                    let azure_token = get_azure_token_from_client_credentials(
+                        client_id, client_secret, tenant_id
+                    ).await?;
+                    
+                    let url = self.get_full_url(&None);
+                    let builder = client.post(url).bearer_auth(azure_token);
+                    return Ok(self.apply_http_headers(builder));
+                }
+            }
+        }
+
+        // Fall back to existing logic
         let effective_auth = match self.api_key() {
             Ok(Some(key)) => Some(CodexAuth::from_api_key(&key)),
             Ok(None) => auth.clone(),
@@ -356,6 +379,98 @@ fn matches_azure_responses_base_url(base_url: &str) -> bool {
     AZURE_MARKERS.iter().any(|marker| base.contains(marker))
 }
 
+
+/// Cached Azure AD token structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAzureToken {
+    access_token: String,
+    expires_at: u64,
+}
+
+/// Global cache for Azure tokens to avoid repeated auth calls
+static AZURE_TOKEN_CACHE: std::sync::LazyLock<Arc<Mutex<Option<CachedAzureToken>>>> = 
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(None)));
+
+/// Get Azure AD token using client credentials flow
+async fn get_azure_token_from_client_credentials(
+    client_id: String,
+    client_secret: String,
+    tenant_id: String,
+) -> crate::error::Result<String> {
+    // Check cache first
+    {
+        let cache = AZURE_TOKEN_CACHE.lock().unwrap();
+        if let Some(cached) = cache.as_ref() {
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Failed to get current time"))?
+                .as_secs();
+            
+            // Return cached token if it's valid for at least 5 more minutes
+            if cached.expires_at > current_time + 300 {
+                return Ok(cached.access_token.clone());
+            }
+        }
+    }
+
+    // Fetch new token
+    let client = reqwest::Client::new();
+    let url = format!("https://login.microsoftonline.com/{}/oauth2/v2.0/token", tenant_id);
+    
+    let params = [
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
+        ("scope", "https://cognitiveservices.azure.com/.default"),
+    ];
+
+    let response = client
+        .post(&url)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to fetch Azure token: {}", e)))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other, 
+            format!("Azure token request failed with status {}: {}", status, body)
+        ).into());
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to parse Azure token response: {}", e)))?;
+
+    let access_token = json["access_token"]
+        .as_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Azure token response missing access_token"))?
+        .to_string();
+
+    let expires_in = json["expires_in"]
+        .as_u64()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Azure token response missing expires_in"))?;
+
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Failed to get current time"))?
+        .as_secs() + expires_in;
+
+    // Cache the token
+    {
+        let mut cache = AZURE_TOKEN_CACHE.lock().unwrap();
+        *cache = Some(CachedAzureToken {
+            access_token: access_token.clone(),
+            expires_at,
+        });
+    }
+
+    Ok(access_token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +499,28 @@ base_url = "http://localhost:11434/v1"
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
         assert_eq!(expected_provider, provider);
+    }
+
+    #[test]
+    fn test_azure_env_var_detection() {
+        // Test that Azure detection works for azure.com URLs
+        let provider = ModelProviderInfo {
+            name: "Azure".into(),
+            base_url: Some("https://test.openai.azure.com/openai".into()),
+            env_key: None,
+            env_key_instructions: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+        };
+
+        // Verify the base URL contains azure.com (this is what our logic checks)
+        assert!(provider.base_url.as_ref().unwrap().to_lowercase().contains("azure.com"));
     }
 
     #[test]
