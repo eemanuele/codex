@@ -2519,7 +2519,6 @@ async fn handle_function_call(
                 output: function_call_output,
             }
         }
-        "read_image" => handle_read_image_tool(sess, arguments, sub_id, call_id).await,
         _ => {
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
@@ -2597,101 +2596,6 @@ async fn handle_custom_tool_call(
     }
 }
 
-async fn handle_read_image_tool(
-    sess: &Session,
-    arguments: String,
-    _sub_id: String,
-    call_id: String,
-) -> ResponseInputItem {
-    #[derive(serde::Deserialize)]
-    struct ReadImageArgs {
-        path: String,
-    }
-    
-    let args = match serde_json::from_str::<ReadImageArgs>(&arguments) {
-        Ok(a) => a,
-        Err(e) => {
-            return ResponseInputItem::FunctionCallOutput {
-                call_id,
-                output: FunctionCallOutputPayload {
-                    content: format!("Failed to parse arguments: {e}"),
-                    success: Some(false),
-                },
-            };
-        }
-    };
-    
-    let path = PathBuf::from(&args.path);
-    
-    // Validate file exists
-    if !path.exists() {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id,
-            output: FunctionCallOutputPayload {
-                content: format!("File not found: {}", path.display()),
-                success: Some(false),
-            },
-        };
-    }
-    
-    // Validate it's a file (not a directory)
-    if !path.is_file() {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id,
-            output: FunctionCallOutputPayload {
-                content: format!("Path is not a file: {}", path.display()),
-                success: Some(false),
-            },
-        };
-    }
-    
-    // Basic validation for common image extensions
-    let valid_extensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "svg"];
-    let extension = path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase());
-    
-    if let Some(ext) = &extension {
-        if !valid_extensions.contains(&ext.as_str()) {
-            return ResponseInputItem::FunctionCallOutput {
-                call_id,
-                output: FunctionCallOutputPayload {
-                    content: format!("Unsupported file extension: .{ext}. Supported formats: {}", valid_extensions.join(", ")),
-                    success: Some(false),
-                },
-            };
-        }
-    } else {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id,
-            output: FunctionCallOutputPayload {
-                content: format!("File has no extension: {}", path.display()),
-                success: Some(false),
-            },
-        };
-    }
-    
-    // Create InputItem and inject into conversation
-    let image_input = InputItem::LocalImage { path: path.clone() };
-    
-    if let Err(_) = sess.inject_input(vec![image_input]) {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id,
-            output: FunctionCallOutputPayload {
-                content: "Failed to inject image into conversation".to_string(),
-                success: Some(false),
-            },
-        };
-    }
-    
-    ResponseInputItem::FunctionCallOutput {
-        call_id,
-        output: FunctionCallOutputPayload {
-            content: format!("Successfully loaded and injected image: {}", path.display()),
-            success: Some(true),
-        },
-    }
-}
 
 fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> ExecParams {
     ExecParams {
