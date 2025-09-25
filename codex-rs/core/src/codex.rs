@@ -2648,6 +2648,7 @@ async fn handle_custom_tool_call(
     }
 }
 
+
 fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> ExecParams {
     ExecParams {
         command: params.command,

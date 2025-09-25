@@ -526,6 +526,7 @@ pub(crate) fn get_openai_tools(
     if config.include_view_image_tool {
         tools.push(create_view_image_tool());
     }
+
     if let Some(mcp_tools) = mcp_tools {
         // Ensure deterministic ordering to maximize prompt cache hits.
         let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
@@ -784,7 +785,7 @@ mod tests {
         ]);
 
         let tools = get_openai_tools(&config, Some(tools_map));
-        // Expect unified_exec first, followed by MCP tools sorted by fully-qualified name.
+        // Expect unified_exec first, followed by view_image, read_image, then MCP tools sorted by fully-qualified name.
         assert_eq_tool_names(
             &tools,
             &[
@@ -1042,5 +1043,33 @@ mod tests {
 
         let expected = "Runs a shell command and returns its output.";
         assert_eq!(description, expected);
+    }
+    #[test]
+    fn test_shell_tool_for_sandbox_readonly() {
+        let tool = super::create_shell_tool_for_sandbox(&SandboxPolicy::ReadOnly);
+        let OpenAiTool::Function(ResponsesApiTool {
+            description, name, ..
+        }) = &tool
+        else {
+            panic!("expected function tool");
+        };
+        assert_eq!(name, "shell");
+
+        let expected = "Runs a shell command and returns its output.";
+        assert_eq!(description, expected);
+    }
+
+    #[test]
+    fn test_shell_tool_for_sandbox_danger_full_access() {
+        let tool = super::create_shell_tool_for_sandbox(&SandboxPolicy::DangerFullAccess);
+        let OpenAiTool::Function(ResponsesApiTool {
+            description, name, ..
+        }) = &tool
+        else {
+            panic!("expected function tool");
+        };
+        assert_eq!(name, "shell");
+
+        assert_eq!(description, "Runs a shell command and returns its output.");
     }
 }
